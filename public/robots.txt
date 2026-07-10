@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://carromba.pages.dev/sitemap.xml
