@@ -1,10 +1,10 @@
 # Cloudflare Pages security and caching headers.
-# Carromba talks to no one: no APIs, no fonts, no third-party anything. The policy
-# below says so, which keeps the attack surface at essentially zero. Framing is
-# blocked on purpose: there is no reason to embed Carromba, and it stops an
-# ad-heavy portal from wrapping the game in a frame full of ads.
+# Carromba talks to exactly one thing: the rooms Worker, over a websocket, for
+# online play. Everything else is same-origin. Framing is blocked on purpose:
+# there is no reason to embed Carromba, and it stops an ad-heavy portal from
+# wrapping the game in a frame full of ads.
 /*
-  Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' wss://carromba-rooms.karthik-e5e.workers.dev; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Referrer-Policy: no-referrer
