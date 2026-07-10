@@ -30,6 +30,8 @@ should not need a business model.
   its shots by simulating them, the same way you would think one through, and it
   does not miss much.
 - **Pass and play.** Two people, one device, hand it back and forth.
+- **Play online.** Create a private room, send the link, and play a friend live
+  from anywhere. Moves sync instantly and it reconnects if someone drops.
 - **Themes.** Warm Heritage out of the box (a real wooden board), plus Midnight
   Arcade and Modern Minimal, with the room built in to add more.
 - **Plays anywhere.** Desktop and mobile, mouse or touch, one tidy square board.
@@ -68,6 +70,17 @@ small enough problem to write from scratch and get exactly right.
 It lives in [`src/engine`](src/engine) and is covered by unit tests. No frameworks
 touch it.
 
+## Playing online
+
+Online games run through a tiny Cloudflare Worker with one Durable Object per
+room, living in [`worker/`](worker/). It is a pure relay with a referee: whoever
+takes a shot resolves it locally and ships the resulting board, the Worker
+forwards that to the opponent and enforces whose turn it is, and the other side
+plays the animation and then adopts the authoritative board. Because only one
+machine's simulation is ever the truth, the two screens can never quietly drift
+apart. Deploy it with `wrangler deploy --config worker/wrangler.jsonc`; it fits
+comfortably in Cloudflare's free tier.
+
 ## Running it yourself
 
 ```bash
@@ -85,9 +98,11 @@ You need Node 20 or newer. That is the whole toolchain.
 ```
 src/
   engine/   the physics: vectors, bodies, the world, board constants
-  game/      the rules: the rack, turn resolution, the striker, the AI
+  game/      the rules: the rack, turn resolution, the striker, the AI, snapshots
   render/    canvas drawing, the themes, the effects
+  net/        the online room client (one websocket, seat, reconnect)
   ui/        the screens, the HUD, input, the frame loop
+worker/     the online rooms backend (a Worker plus one Durable Object)
 ```
 
 The `engine` and `game` folders are pure and framework-free, which is why they are
@@ -96,9 +111,10 @@ one more entry in [`src/render/themes.ts`](src/render/themes.ts) and nothing els
 
 ## Tech
 
-TypeScript and Vite, a canvas, and the Web Audio API for the clacks. That is it. It
-deploys as a folder of static files to Cloudflare Pages, but it will sit happily on
-any static host.
+TypeScript and Vite, a canvas, and the Web Audio API for the clacks. The game
+itself is a folder of static files that will sit happily on any host, with zero
+runtime dependencies. The one optional server piece is the online rooms Worker,
+which only comes into play when two people want to play over a link.
 
 ## Contributing
 
@@ -111,6 +127,12 @@ the flick feel better. If you touch the engine or the rules, keep the tests gree
 Carrom is a public-domain game with centuries of history behind it. Carromba's
 board, pieces, physics, and code are all original. No assets or code were taken
 from any other carrom project.
+
+## Support
+
+Carromba is free and always will be. If it made your day a little better, you can
+[buy me a coffee](https://buymeacoffee.com/winnerkarthik). Entirely optional, much
+appreciated.
 
 ## License
 

@@ -1,8 +1,10 @@
 import { el, clear } from './dom';
-import { GameController, type HudInfo } from './controller';
+import { GameController, type HudInfo, type LocalMove } from './controller';
 import { THEMES, getTheme, type Theme } from '../render/themes';
 import { getPrefs, setPref, getStats } from '../store';
 import type { Difficulty, Mode, Player } from '../game/types';
+import { Room, makeRoomCode, type Seat, type NetStatus } from '../net/room';
+import { captureSnapshot } from '../game/snapshot';
 
 // The whole interface around the board: the home menu, the in-game HUD, and the
 // modals. Plain DOM, driven by the controller's HUD callbacks. Copy is written to
@@ -10,6 +12,7 @@ import type { Difficulty, Mode, Player } from '../game/types';
 
 const RULES_URL = 'https://github.com/KarthikSubramanian07/carromba/blob/main/RULES.md';
 const REPO_URL = 'https://github.com/KarthikSubramanian07/carromba';
+const COFFEE_URL = 'https://buymeacoffee.com/winnerkarthik';
 
 export class App {
   private controller: GameController | null = null;
@@ -35,6 +38,12 @@ export class App {
   private modalRoot!: HTMLElement;
   private screens = new Map<string, HTMLElement>();
 
+  // Online play.
+  private room: Room | null = null;
+  private seat: Seat | null = null;
+  private started = false; // both players present at least once
+  private netStatus: NetStatus = 'connecting';
+
   constructor(private root: HTMLElement) {
     const prefs = getPrefs();
     this.difficulty = prefs.lastDifficulty;
@@ -44,7 +53,21 @@ export class App {
 
     this.build();
     this.applyThemeVars();
-    this.showScreen('home');
+
+    // A shared link lands here: carromba.pages.dev/#r/CODE joins that room.
+    const code = this.roomCodeFromHash();
+    if (code) this.enterRoom(code);
+    else this.showScreen('home');
+
+    window.addEventListener('hashchange', () => {
+      const c = this.roomCodeFromHash();
+      if (c && c !== this.room?.code) this.enterRoom(c);
+    });
+  }
+
+  private roomCodeFromHash(): string | null {
+    const m = location.hash.match(/^#r\/([A-Za-z0-9_-]{1,32})$/);
+    return m ? m[1]! : null;
   }
 
   // ---- Layout ----
@@ -115,6 +138,17 @@ export class App {
               'Start a local game',
             ),
           ),
+          el(
+            'div',
+            { class: 'menu-card' },
+            el('h2', {}, 'Play online'),
+            el('p', { class: 'card-sub' }, 'Get a private link, send it to a friend, play live from anywhere.'),
+            el(
+              'button',
+              { class: 'btn', type: 'button', onclick: () => this.createRoom() },
+              'Create a room',
+            ),
+          ),
         ),
         el(
           'div',
@@ -122,6 +156,7 @@ export class App {
           el('button', { class: 'link', type: 'button', onclick: () => this.openHowTo() }, 'How to play'),
           el('button', { class: 'link', type: 'button', onclick: () => this.openSettings() }, 'Themes and settings'),
           el('a', { class: 'link', href: RULES_URL, target: '_blank', rel: 'noopener noreferrer' }, 'Full rules'),
+          el('a', { class: 'link coffee', href: COFFEE_URL, target: '_blank', rel: 'noopener noreferrer' }, '☕ Buy me a coffee'),
         ),
         el('p', { class: 'stat-line' }, this.statLine()),
         el(
@@ -185,7 +220,24 @@ export class App {
     for (const [key, node] of this.screens) node.hidden = key !== name;
   }
 
+  private ensureController(): void {
+    if (this.controller) return;
+    this.controller = new GameController(this.canvas, this.theme.id, {
+      onHud: (info) => this.renderHud(info),
+      onGameOver: (winner, humanWon) => this.showWin(winner, humanWon),
+      onLocalMove: (move, snap) => this.room?.sendShot(move, snap),
+    });
+    this.controller.setMuted(this.muted);
+    this.controller.setReduceMotion(this.reduceMotion);
+  }
+
+  private clearHash(): void {
+    if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  }
+
   private goHome(): void {
+    this.leaveRoom();
+    this.clearHash();
     this.controller?.destroy();
     this.controller = null;
     this.showScreen('home');
@@ -195,16 +247,11 @@ export class App {
   }
 
   private startGame(mode: Mode): void {
+    this.leaveRoom();
+    this.clearHash();
     this.showScreen('game');
-    if (!this.controller) {
-      this.controller = new GameController(this.canvas, this.theme.id, {
-        onHud: (info) => this.renderHud(info),
-        onGameOver: (winner, humanWon) => this.showWin(winner, humanWon),
-      });
-      this.controller.setMuted(this.muted);
-      this.controller.setReduceMotion(this.reduceMotion);
-    }
-    this.controller.start(mode, this.difficulty, 'p1');
+    this.ensureController();
+    this.controller!.start(mode, this.difficulty, 'p1');
     this.closeModal();
   }
 
@@ -214,13 +261,84 @@ export class App {
     this.closeModal();
   }
 
+  // ---- Online ----
+  private createRoom(): void {
+    this.enterRoom(makeRoomCode());
+  }
+
+  private enterRoom(code: string): void {
+    if (this.room && this.room.code === code) return;
+    this.leaveRoom();
+    if (location.hash !== `#r/${code}`) location.hash = `r/${code}`;
+    this.showScreen('game');
+    this.ensureController();
+    this.seat = null;
+    this.started = false;
+    this.netStatus = 'connecting';
+    this.room = new Room(code, {
+      onStatus: (s) => {
+        this.netStatus = s;
+        this.refreshWaiting();
+      },
+      onWelcome: (seat) => {
+        this.seat = seat;
+        if (seat !== 'spectator') this.controller!.startOnline(seat);
+        this.refreshWaiting();
+      },
+      onStart: () => {
+        this.started = true;
+        this.closeModal();
+      },
+      onState: (snap) => this.controller!.adoptSnapshot(snap),
+      onShot: (shot, snap) => this.controller!.applyRemoteShot(shot as LocalMove, snap),
+      onReset: (snap) => this.controller!.adoptSnapshot(snap),
+      onPeer: (p1, p2) => this.onPeer(p1, p2),
+    });
+    this.showWaiting(code, false);
+  }
+
+  private leaveRoom(): void {
+    this.room?.close();
+    this.room = null;
+    this.seat = null;
+    this.started = false;
+  }
+
+  private onPeer(p1: boolean, p2: boolean): void {
+    if (p1 && p2) {
+      this.started = true;
+      this.closeModal();
+    } else if (this.started && this.seat !== 'spectator') {
+      this.showWaiting(this.room?.code ?? '', true);
+    } else {
+      this.refreshWaiting();
+    }
+  }
+
+  private rematch(): void {
+    if (this.room && this.seat && this.seat !== 'spectator') {
+      this.controller!.startOnline(this.seat);
+      this.room.sendReset(captureSnapshot(this.controller!.state));
+      this.closeModal();
+    } else {
+      this.restart();
+    }
+  }
+
   // ---- HUD ----
   private renderHud(info: HudInfo): void {
     if (!this.hud) return;
     const h = this.hud;
     const local = info.mode === 'local';
-    h.p1Name.textContent = local ? 'Player 1' : 'You';
-    h.p2Name.textContent = local ? 'Player 2' : 'Bot';
+    const online = info.mode === 'online';
+    const opponent = online ? 'Opponent' : 'Bot';
+    if (local) {
+      h.p1Name.textContent = 'Player 1';
+      h.p2Name.textContent = 'Player 2';
+    } else {
+      h.p1Name.textContent = info.humanSide === 'p1' ? 'You' : opponent;
+      h.p2Name.textContent = info.humanSide === 'p2' ? 'You' : opponent;
+    }
     h.p1Count.textContent = countText(info.leftP1);
     h.p2Count.textContent = countText(info.leftP2);
     setChip(h.p1Chip, info.colors.p1);
@@ -234,8 +352,10 @@ export class App {
       h.turnPill.textContent = 'Bot is lining it up...';
     } else if (local) {
       h.turnPill.textContent = active === 'p1' ? 'Player 1 to shoot' : 'Player 2 to shoot';
+    } else if (active === info.humanSide) {
+      h.turnPill.textContent = 'Your turn';
     } else {
-      h.turnPill.textContent = active === info.humanSide ? 'Your turn' : "Bot's turn";
+      h.turnPill.textContent = online ? "Opponent's turn" : "Bot's turn";
     }
 
     h.queen.textContent = queenText(info);
@@ -244,7 +364,7 @@ export class App {
   }
 
   // ---- Modals ----
-  private openModal(title: string, body: HTMLElement, footer?: HTMLElement): void {
+  private openModal(title: string, body: HTMLElement, footer?: HTMLElement, dismissable = true): void {
     const card = el(
       'div',
       { class: 'modal-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
@@ -252,14 +372,16 @@ export class App {
         'div',
         { class: 'modal-head' },
         el('h2', {}, title),
-        el('button', { class: 'icon-btn', type: 'button', title: 'Close', onclick: () => this.closeModal() }, '×'),
+        dismissable
+          ? el('button', { class: 'icon-btn', type: 'button', title: 'Close', onclick: () => this.closeModal() }, '×')
+          : '',
       ),
       body,
       footer ?? '',
     );
     clear(this.modalRoot);
     this.modalRoot.append(
-      el('div', { class: 'modal-scrim', onclick: () => this.closeModal() }),
+      el('div', { class: 'modal-scrim', onclick: () => dismissable && this.closeModal() }),
       card,
     );
     this.modalRoot.hidden = false;
@@ -274,20 +396,88 @@ export class App {
     const mode = this.controller?.state.mode ?? 'ai';
     let headline: string;
     if (mode === 'local') headline = winner === 'p1' ? 'Player 1 takes it' : 'Player 2 takes it';
+    else if (mode === 'online') headline = humanWon ? 'You win' : 'Opponent wins';
     else headline = humanWon ? 'You cleared the board' : 'The bot got there first';
 
+    const positive = humanWon || mode === 'local';
     const body = el(
       'div',
       { class: 'modal-body win' },
-      el('p', { class: 'win-sub' }, humanWon || mode === 'local' ? 'Clean sweep. Queen covered, board clear.' : 'Rematch? The pack is already set.'),
+      el('p', { class: 'win-sub' }, positive ? 'Clean sweep. Queen covered, board clear.' : 'Rematch? The pack is already set.'),
     );
     const footer = el(
       'div',
       { class: 'modal-foot' },
-      el('button', { class: 'btn primary', type: 'button', onclick: () => this.restart() }, 'Play again'),
+      el(
+        'button',
+        { class: 'btn primary', type: 'button', onclick: () => (mode === 'online' ? this.rematch() : this.restart()) },
+        'Play again',
+      ),
       el('button', { class: 'btn', type: 'button', onclick: () => this.goHome() }, 'Back to menu'),
     );
     this.openModal(headline, body, footer);
+  }
+
+  // ---- Online waiting / share screen ----
+  private showWaiting(code: string, opponentLeft: boolean): void {
+    const shareUrl = `${location.origin}/#r/${code}`;
+    const full = this.seat === 'spectator';
+
+    const body = el('div', { class: 'modal-body waiting' });
+    if (full) {
+      body.append(p('This room already has two players. Head back and start your own.'));
+    } else {
+      body.append(
+        p(
+          opponentLeft
+            ? 'Your opponent dropped out. Hang on, the game resumes the moment they reopen the link.'
+            : 'Send this link to whoever you want to play. The board comes alive the instant they open it.',
+        ),
+        el(
+          'div',
+          { class: 'share-row' },
+          el('input', { class: 'share-input', readonly: true, value: shareUrl, 'aria-label': 'Room link' }),
+          el('button', { class: 'btn copy-btn', type: 'button', onclick: (e: Event) => this.copyShare(shareUrl, e) }, 'Copy'),
+        ),
+        el('p', { class: 'room-code' }, `Room ${code}`),
+      );
+    }
+    body.append(el('p', { class: 'net-status' }, this.netStatusText()));
+
+    const footer = el(
+      'div',
+      { class: 'modal-foot' },
+      el('button', { class: 'btn', type: 'button', onclick: () => this.goHome() }, 'Leave'),
+    );
+    this.openModal(opponentLeft ? 'Waiting for your opponent' : full ? 'Room is full' : 'Room ready', body, footer, false);
+  }
+
+  // Re-render the waiting modal if it is the one showing (status/seat changed).
+  private refreshWaiting(): void {
+    if (this.started || !this.room || this.modalRoot.hidden) return;
+    this.showWaiting(this.room.code, false);
+  }
+
+  private netStatusText(): string {
+    if (this.netStatus === 'connecting') return 'Connecting...';
+    if (this.netStatus === 'disconnected') return 'Reconnecting...';
+    if (this.seat === 'spectator') return 'Connected';
+    return 'Connected. Waiting for someone to join.';
+  }
+
+  private copyShare(url: string, e: Event): void {
+    const btn = e.currentTarget as HTMLButtonElement;
+    navigator.clipboard?.writeText(url).then(
+      () => {
+        btn.textContent = 'Copied';
+        setTimeout(() => (btn.textContent = 'Copy'), 1500);
+      },
+      () => {
+        // Clipboard blocked: select the field so the user can copy by hand.
+        const input = btn.parentElement?.querySelector('.share-input') as HTMLInputElement | null;
+        input?.select();
+      },
+    );
   }
 
   private openSettings(): void {
@@ -340,6 +530,7 @@ export class App {
       'div',
       { class: 'modal-foot' },
       el('a', { class: 'link', href: REPO_URL, target: '_blank', rel: 'noopener noreferrer' }, 'Source on GitHub'),
+      el('a', { class: 'link coffee', href: COFFEE_URL, target: '_blank', rel: 'noopener noreferrer' }, '☕ Buy me a coffee'),
     );
     this.openModal('Themes and settings', body, footer);
   }
@@ -434,7 +625,10 @@ function setChip(node: HTMLElement, color: 'white' | 'black' | null): void {
 function queenText(info: HudInfo): string {
   if (info.queen.covered) {
     const holder = info.queen.pocketedBy;
-    const who = info.mode === 'local' ? (holder === 'p1' ? 'P1' : 'P2') : holder === info.humanSide ? 'you' : 'the bot';
+    let who: string;
+    if (info.mode === 'local') who = holder === 'p1' ? 'P1' : 'P2';
+    else if (holder === info.humanSide) who = 'you';
+    else who = info.mode === 'online' ? 'your opponent' : 'the bot';
     return `Queen covered by ${who}`;
   }
   if (info.queen.pending) return 'Queen needs covering';
