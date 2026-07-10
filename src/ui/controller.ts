@@ -6,6 +6,7 @@ import { createGame, resetStrikerForTurn } from '../game/setup';
 import { resolveStroke, menLeftFor } from '../game/rules';
 import { computeFlick, clampToBaseline } from '../game/striker';
 import { chooseShot } from '../game/ai';
+import { captureSnapshot, applySnapshot, type Snapshot } from '../game/snapshot';
 import type { Body } from '../engine/body';
 import {
   BASELINE_Y,
@@ -36,9 +37,18 @@ export interface HudInfo {
   thinking: boolean;
 }
 
+// A move the local player just resolved, plus the resulting board, for the app to
+// relay to the opponent in an online game.
+export interface LocalMove {
+  strikerX: number;
+  dir: Vec;
+  speed: number;
+}
+
 export interface ControllerHooks {
   onHud(info: HudInfo): void;
   onGameOver(winner: Player, humanWon: boolean): void;
+  onLocalMove?(move: LocalMove, snap: Snapshot): void;
 }
 
 export class GameController {
@@ -62,6 +72,12 @@ export class GameController {
   private thinking = false;
   private aiPreview: { dir: Vec; power: number } | null = null;
   private gen = 0; // bumped on every start/destroy to cancel stale async work
+
+  // Online play. `lastShot` is the local move waiting to be broadcast once it
+  // resolves; `remoteSnap` is the opponent's authoritative board to adopt after
+  // their shot finishes animating on this screen.
+  private lastShot: LocalMove | null = null;
+  private remoteSnap: Snapshot | null = null;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -105,6 +121,56 @@ export class GameController {
     this.emitHud();
     this.loop(performance.now());
     this.maybeRunAI();
+  }
+
+  // Begin an online game. p1 always breaks; the seat decides which side is this
+  // player. No AI, no thinking delay: moves arrive over the wire.
+  startOnline(seat: Player): void {
+    this.gen += 1;
+    cancelAnimationFrame(this.raf);
+    this.state = createGame('online', 'medium', seat);
+    this.lastShot = null;
+    this.remoteSnap = null;
+    this.fx.clear();
+    this.inputMode = null;
+    this.pointer = null;
+    this.thinking = false;
+    this.aiPreview = null;
+    this.lastTime = performance.now();
+    this.renderer.resize();
+    this.emitHud();
+    this.loop(performance.now());
+  }
+
+  // Play out the opponent's shot on this screen, then adopt their authoritative
+  // board when it settles.
+  applyRemoteShot(move: LocalMove, snap: Snapshot): void {
+    if (this.state.mode !== 'online') return;
+    const shooter = this.state.turn; // the opponent, whose turn it currently is
+    const s = this.state.striker;
+    s.pocketed = false;
+    s.pos.x = move.strikerX;
+    s.pos.y = BASELINE_Y[shooter];
+    s.vel.x = move.dir.x * move.speed;
+    s.vel.y = move.dir.y * move.speed;
+    this.remoteSnap = snap;
+    this.beginSimulation();
+  }
+
+  // Snap straight to an authoritative board with no animation. Used for joining a
+  // game in progress, reconnecting, and rematches.
+  adoptSnapshot(snap: Snapshot): void {
+    if (this.state.mode !== 'online') return;
+    this.remoteSnap = null;
+    this.lastShot = null;
+    applySnapshot(this.state, snap);
+    this.resetStrokeState();
+    if (this.state.winner) {
+      this.state.phase = 'gameover';
+    } else {
+      resetStrikerForTurn(this.state);
+    }
+    this.emitHud();
   }
 
   destroy(): void {
@@ -168,7 +234,27 @@ export class GameController {
     }
   }
 
+  private resetStrokeState(): void {
+    this.pocketedThisStroke = [];
+    this.strikerTouchedPiece = false;
+    this.simElapsed = 0;
+    this.accumulator = 0;
+  }
+
   private finishStroke(): void {
+    // Online remote shot: the opponent already resolved this stroke, so adopt
+    // their board verbatim rather than resolving it again here.
+    if (this.state.mode === 'online' && this.remoteSnap) {
+      const snap = this.remoteSnap;
+      this.remoteSnap = null;
+      applySnapshot(this.state, snap);
+      this.resetStrokeState();
+      this.emitHud();
+      if (this.state.winner) return this.declareWinner(this.state.winner);
+      resetStrikerForTurn(this.state);
+      return;
+    }
+
     const strikerPocketed = this.pocketedThisStroke.some((p) => p.kind === 'striker');
     const summary = resolveStroke(this.state, {
       pocketed: this.pocketedThisStroke,
@@ -176,25 +262,29 @@ export class GameController {
       strikerTouchedPiece: this.strikerTouchedPiece,
     });
     if (summary.queenCovered) recordQueenCovered();
+    this.resetStrokeState();
 
-    this.pocketedThisStroke = [];
-    this.strikerTouchedPiece = false;
-    this.simElapsed = 0;
-    this.accumulator = 0;
+    // Online local shot: hand the resolved board to the app to broadcast.
+    if (this.state.mode === 'online' && this.lastShot) {
+      this.hooks.onLocalMove?.(this.lastShot, captureSnapshot(this.state));
+      this.lastShot = null;
+    }
 
     this.emitHud();
 
-    if (summary.winner) {
-      this.state.phase = 'gameover';
-      const humanWon = this.state.mode === 'local' ? true : summary.winner === this.state.humanSide;
-      recordResult(this.state.mode, this.state.difficulty, humanWon);
-      audio.playWin();
-      this.hooks.onGameOver(summary.winner, humanWon);
-      return;
-    }
+    if (summary.winner) return this.declareWinner(summary.winner);
 
     resetStrikerForTurn(this.state);
     this.maybeRunAI();
+  }
+
+  private declareWinner(winner: Player): void {
+    this.state.phase = 'gameover';
+    const humanWon = this.state.mode === 'local' ? true : winner === this.state.humanSide;
+    if (this.state.mode === 'ai') recordResult('ai', this.state.difficulty, humanWon);
+    else if (this.state.mode === 'local') recordResult('local', this.state.difficulty, false);
+    audio.playWin();
+    this.hooks.onGameOver(winner, humanWon);
   }
 
   // ---- AI turn: think, telegraph the shot, then take it ----
@@ -231,10 +321,7 @@ export class GameController {
 
   private beginSimulation(): void {
     audio.unlockAudio();
-    this.pocketedThisStroke = [];
-    this.strikerTouchedPiece = false;
-    this.simElapsed = 0;
-    this.accumulator = 0;
+    this.resetStrokeState();
     this.state.phase = 'simulating';
   }
 
@@ -242,7 +329,9 @@ export class GameController {
   private isHumanTurn(): boolean {
     if (this.thinking || this.aiPreview) return false;
     if (this.state.phase !== 'placing' && this.state.phase !== 'aiming') return false;
-    if (this.state.mode === 'ai' && this.state.turn !== this.state.humanSide) return false;
+    // In vs-bot and online, you only touch the board on your own turn. Local
+    // pass-and-play lets whoever's turn it is use the same device.
+    if (this.state.mode !== 'local' && this.state.turn !== this.state.humanSide) return false;
     return true;
   }
 
@@ -285,6 +374,8 @@ export class GameController {
     if (this.inputMode === 'aim' && this.pointer) {
       const flick = computeFlick(this.state.striker.pos, this.pointer);
       if (flick) {
+        // Remember the shot so an online game can relay it once it resolves.
+        this.lastShot = { strikerX: this.state.striker.pos.x, dir: flick.dir, speed: flick.speed };
         this.state.striker.vel.x = flick.dir.x * flick.speed;
         this.state.striker.vel.y = flick.dir.y * flick.speed;
         this.beginSimulation();

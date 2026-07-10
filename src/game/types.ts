@@ -4,7 +4,7 @@ import type { World } from '../engine/world';
 export type Player = 'p1' | 'p2';
 export type PieceColor = 'white' | 'black';
 export type Difficulty = 'easy' | 'medium' | 'hard';
-export type Mode = 'ai' | 'local';
+export type Mode = 'ai' | 'local' | 'online';
 
 // The board's life cycle. `placing` waits for the striker to be set on the
 // baseline, `aiming` for the flick, `simulating` while physics runs, `resolving`
