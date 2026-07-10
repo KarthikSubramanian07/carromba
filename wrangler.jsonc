@@ -1,0 +1,9 @@
+{
+  // Carromba is a static Cloudflare Pages project. There is no Worker, no
+  // bindings, and nothing to configure at runtime: `wrangler pages deploy`
+  // reads this to know the project name and where the built files land.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "carromba",
+  "pages_build_output_dir": "dist",
+  "compatibility_date": "2026-07-09"
+}
