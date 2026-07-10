@@ -28,6 +28,9 @@ body {
   margin: 0;
   padding: 0;
   height: 100%;
+  /* No pull-to-refresh or rubber-band bounce dragging the whole page around. */
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
@@ -39,12 +42,27 @@ body {
   text-rendering: optimizeLegibility;
   overflow-x: hidden;
   transition: color 0.3s ease;
+  /* Kill the iOS double-tap-zoom delay on taps while leaving pinch alone. */
+  touch-action: manipulation;
 }
 
 #app {
   min-height: 100%;
+  min-height: 100dvh; /* survives the mobile browser's disappearing toolbar */
   display: flex;
   flex-direction: column;
+}
+
+/* The board and chrome should not be text-selectable when you drag on them, but
+   the rules text and the share link still should be. */
+.screen {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.modal-body,
+.share-input {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .screen[hidden] {
@@ -113,6 +131,8 @@ body {
   padding: 0.45rem 0.7rem;
   cursor: pointer;
   line-height: 1;
+  /* A comfortable touch target on phones. */
+  min-height: 40px;
 }
 .icon-btn:hover {
   border-color: var(--accent);
@@ -123,7 +143,14 @@ body {
   flex: 1;
   display: grid;
   place-items: center;
+  gap: 1rem;
   padding: 2rem 1.25rem;
+  padding-top: max(2rem, env(safe-area-inset-top));
+  padding-bottom: max(2rem, env(safe-area-inset-bottom));
+  padding-left: max(1.25rem, env(safe-area-inset-left));
+  padding-right: max(1.25rem, env(safe-area-inset-right));
+  overflow-y: auto; /* small phones: let a tall menu scroll rather than clip */
+  -webkit-overflow-scrolling: touch;
 }
 .home-inner {
   width: 100%;
@@ -217,9 +244,14 @@ body {
 /* ---------- Game ---------- */
 .game {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 0.75rem clamp(0.5rem, 3vw, 1.5rem) 1rem;
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  padding-left: max(clamp(0.5rem, 3vw, 1.5rem), env(safe-area-inset-left));
+  padding-right: max(clamp(0.5rem, 3vw, 1.5rem), env(safe-area-inset-right));
   gap: 0.6rem;
   max-width: 760px;
   width: 100%;
@@ -326,11 +358,14 @@ body {
 #board {
   width: auto;
   height: auto;
-  max-width: min(94vw, 560px);
-  max-height: min(64vh, 560px);
+  /* Fill whichever dimension is tighter, staying a square. dvh keeps it honest
+     as the mobile toolbar slides in and out. */
+  max-width: min(96vw, 66dvh, 620px);
+  max-height: min(96vw, 66dvh, 620px);
   aspect-ratio: 1 / 1;
   border-radius: 20px;
   touch-action: none;
+  -webkit-touch-callout: none;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.4);
 }
 .message {
@@ -556,6 +591,58 @@ body {
   }
   .side-name {
     font-size: 0.72rem;
+  }
+}
+
+/* Tablets (iPad and up): give the board and the menu more room to breathe. */
+@media (min-width: 820px) {
+  .game {
+    max-width: 900px;
+  }
+  #board {
+    max-width: min(88vw, 74dvh, 720px);
+    max-height: min(88vw, 74dvh, 720px);
+  }
+}
+
+/* Short landscape (a phone on its side): stacking the chrome above the board
+   leaves no room for it, so put the board on the left at full height and the HUD
+   in a column beside it. */
+@media (orientation: landscape) and (max-height: 620px) {
+  .game {
+    display: grid;
+    max-width: none;
+    grid-template-columns: minmax(0, 1fr) clamp(190px, 32vw, 280px);
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas:
+      'board topbar'
+      'board scoreboard'
+      'board message';
+    column-gap: 0.75rem;
+    row-gap: 0.4rem;
+    align-items: center;
+  }
+  .topbar {
+    grid-area: topbar;
+  }
+  .scoreboard {
+    grid-area: scoreboard;
+  }
+  .board-wrap {
+    grid-area: board;
+    height: 100%;
+  }
+  .message {
+    grid-area: message;
+    align-self: start;
+  }
+  .hint {
+    display: none; /* the how-to covers this; save the space */
+  }
+  #board {
+    /* Height is the scarce dimension in landscape, so drive off it. */
+    max-width: min(88dvh, 60vw, 560px);
+    max-height: min(88dvh, 560px);
   }
 }
 
