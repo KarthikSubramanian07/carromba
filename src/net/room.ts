@@ -43,6 +43,26 @@ function playerId(): string {
   return id;
 }
 
+function seatTokenKey(code: string, pid: string): string {
+  return `carromba:seat:${code}:${pid}`;
+}
+
+function storedSeatToken(code: string, pid: string): string | null {
+  try {
+    return sessionStorage.getItem(seatTokenKey(code, pid));
+  } catch {
+    return null;
+  }
+}
+
+function saveSeatToken(code: string, pid: string, token: string): void {
+  try {
+    sessionStorage.setItem(seatTokenKey(code, pid), token);
+  } catch {
+    // private mode: reconnect may not restore seat without token
+  }
+}
+
 export class Room {
   private ws: WebSocket | null = null;
   private pid = playerId();
@@ -64,7 +84,7 @@ export class Room {
     ws.onopen = () => {
       this.retry = 0;
       this.handlers.onStatus('connected');
-      this.send({ t: 'join', pid: this.pid });
+      this.send({ t: 'join', pid: this.pid, seatToken: storedSeatToken(this.code, this.pid) ?? '' });
     };
     ws.onmessage = (e) => this.route(e.data as string);
     ws.onclose = () => {
@@ -90,6 +110,9 @@ export class Room {
     switch (msg['t']) {
       case 'welcome':
         this.seat = msg['seat'] as Seat;
+        if (typeof msg['seatToken'] === 'string' && msg['seatToken']) {
+          saveSeatToken(this.code, this.pid, msg['seatToken']);
+        }
         this.handlers.onWelcome(this.seat);
         break;
       case 'start':
