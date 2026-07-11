@@ -15,10 +15,13 @@ type Seat = 'p1' | 'p2' | 'spectator';
 interface Seats {
   p1?: string; // the persistent player id holding this seat
   p2?: string;
+  p1Token?: string;
+  p2Token?: string;
 }
 interface Attachment {
   seat: Seat;
   pid: string;
+  seatToken: string;
 }
 
 export default {
@@ -65,7 +68,7 @@ export class Room {
     }
     switch (msg['t']) {
       case 'join':
-        return this.onJoin(ws, String(msg['pid'] ?? ''));
+        return this.onJoin(ws, String(msg['pid'] ?? ''), String(msg['seatToken'] ?? ''));
       case 'shot':
         return this.onShot(ws, msg);
       case 'sync':
@@ -88,26 +91,58 @@ export class Room {
     await this.broadcastPresence();
   }
 
-  private async onJoin(ws: WebSocket, pid: string): Promise<void> {
+  private newSeatToken(): string {
+    return crypto.randomUUID().replace(/-/g, '');
+  }
+
+  private claimSeat(
+    seats: Seats,
+    pid: string,
+    seat: 'p1' | 'p2',
+    seatToken: string
+  ): { seat: Seat; token: string } | null {
+    const pidKey = seat;
+    const tokenKey = seat === 'p1' ? 'p1Token' : 'p2Token';
+    const heldPid = seats[pidKey];
+    const heldToken = seats[tokenKey];
+    if (heldPid === pid) {
+      if (heldToken && seatToken && seatToken !== heldToken) return null;
+      const token = heldToken ?? this.newSeatToken();
+      seats[tokenKey] = token;
+      return { seat, token };
+    }
+    if (!heldPid) {
+      const token = this.newSeatToken();
+      seats[pidKey] = pid;
+      seats[tokenKey] = token;
+      return { seat, token };
+    }
+    return null;
+  }
+
+  private async onJoin(ws: WebSocket, pid: string, seatToken: string): Promise<void> {
     // Client-supplied identity; keep it short and printable so storage stays bounded.
     if (!pid || pid.length > 64 || !/^[A-Za-z0-9_-]+$/.test(pid)) return;
     const seats = (await this.state.storage.get<Seats>('seats')) ?? {};
-    let seat: Seat;
-    if (seats.p1 === pid) seat = 'p1';
-    else if (seats.p2 === pid) seat = 'p2';
-    else if (!seats.p1) {
-      seats.p1 = pid;
-      seat = 'p1';
-    } else if (!seats.p2) {
-      seats.p2 = pid;
-      seat = 'p2';
-    } else {
-      seat = 'spectator';
-    }
-    await this.state.storage.put('seats', seats);
-    ws.serializeAttachment({ seat, pid } satisfies Attachment);
+    let seat: Seat = 'spectator';
+    let token = '';
 
-    ws.send(JSON.stringify({ t: 'welcome', seat }));
+    const p1 = this.claimSeat(seats, pid, 'p1', seatToken);
+    if (p1) {
+      seat = p1.seat;
+      token = p1.token;
+    } else {
+      const p2 = this.claimSeat(seats, pid, 'p2', seatToken);
+      if (p2) {
+        seat = p2.seat;
+        token = p2.token;
+      }
+    }
+
+    await this.state.storage.put('seats', seats);
+    ws.serializeAttachment({ seat, pid, seatToken: token } satisfies Attachment);
+
+    ws.send(JSON.stringify({ t: 'welcome', seat, seatToken: token }));
     const snap = await this.state.storage.get('snap');
     if (snap) ws.send(JSON.stringify({ t: 'state', snap }));
 
