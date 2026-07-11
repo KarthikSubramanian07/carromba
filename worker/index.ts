@@ -53,9 +53,13 @@ export class Room {
   }
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+    // Bound message size so a client cannot fill DO memory with a huge JSON blob.
+    const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw);
+    if (text.length > 64_000) return;
+
     let msg: Record<string, unknown>;
     try {
-      msg = JSON.parse(typeof raw === 'string' ? raw : new TextDecoder().decode(raw));
+      msg = JSON.parse(text);
     } catch {
       return;
     }
@@ -85,7 +89,8 @@ export class Room {
   }
 
   private async onJoin(ws: WebSocket, pid: string): Promise<void> {
-    if (!pid) return;
+    // Client-supplied identity; keep it short and printable so storage stays bounded.
+    if (!pid || pid.length > 64 || !/^[A-Za-z0-9_-]+$/.test(pid)) return;
     const seats = (await this.state.storage.get<Seats>('seats')) ?? {};
     let seat: Seat;
     if (seats.p1 === pid) seat = 'p1';
