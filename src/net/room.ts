@@ -137,8 +137,8 @@ export class Room {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
   }
 
-  sendShot(shot: unknown, snap: Snapshot): void {
-    this.send({ t: 'shot', shot, snap });
+  sendShot(shot: unknown, snap?: Snapshot): void {
+    this.send({ t: 'shot', shot, ...(snap ? { snap } : {}) });
   }
 
   sendReset(snap: Snapshot): void {
