@@ -225,7 +225,10 @@ export class App {
     this.controller = new GameController(this.canvas, this.theme.id, {
       onHud: (info) => this.renderHud(info),
       onGameOver: (winner, humanWon) => this.showWin(winner, humanWon),
-      onLocalMove: (move, snap) => this.room?.sendShot(move, snap),
+      onLocalMove: (move, snap) => {
+        if (snap) this.room?.sendShot(move, snap);
+        else this.room?.sendShot({ v: 1, ...move });
+      },
     });
     this.controller.setMuted(this.muted);
     this.controller.setReduceMotion(this.reduceMotion);
@@ -290,7 +293,11 @@ export class App {
         this.closeModal();
       },
       onState: (snap) => this.controller!.adoptSnapshot(snap),
-      onShot: (shot, snap) => this.controller!.applyRemoteShot(shot as LocalMove, snap),
+      onShot: (shot, snap) => {
+        if (!this.controller) return;
+        if (this.controller.shouldAdoptServerSnap()) this.controller.applyServerShot(snap);
+        else this.controller.applyRemoteShot(shot as LocalMove, snap);
+      },
       onReset: (snap) => this.controller!.adoptSnapshot(snap),
       onPeer: (p1, p2) => this.onPeer(p1, p2),
     });
