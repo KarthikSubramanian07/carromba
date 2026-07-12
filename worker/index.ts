@@ -1,11 +1,20 @@
 /// <reference types="@cloudflare/workers-types" />
 
-// Carromba's online backend: the smallest thing that lets two browsers share a
-// game. It is a pure relay with a referee. It never runs physics or rules; the
-// player who takes a shot resolves it locally and ships the resulting board, and
-// this Worker just forwards that to the opponent and makes sure only the player
-// whose turn it is can move. One Durable Object per room, addressed by the room
-// code in the URL. That is the whole server.
+import { normalizeShotIntent } from '../src/game/shotIntent';
+import { resolveShotFromSnapshot, snapshotsEqual } from '../src/game/serverResolver';
+import { captureSnapshot, type Snapshot } from '../src/game/snapshot';
+import { createGame } from '../src/game/setup';
+
+// Phase 2: Durable Object snapshots are authoritative for online play.
+const SERVER_AUTHORITY = true;
+
+function openingSnapshot(): Snapshot {
+  return captureSnapshot(createGame('online', 'medium', 'p1'));
+}
+
+// Carromba's online backend: seat tokens, turn referee, and server-authoritative
+// shot resolution. Clients send shot intent; the Durable Object replays physics
+// and rules, stores the resulting snapshot, and broadcasts it to every seat.
 
 export interface Env {
   ROOM: DurableObjectNamespace;
@@ -153,14 +162,23 @@ export class Room {
   private async onShot(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
     const att = ws.deserializeAttachment() as Attachment | null;
     if (!att || (att.seat !== 'p1' && att.seat !== 'p2')) return;
-    // Referee: only the side whose turn it is may move. The stored snapshot's
-    // `turn` is the source of truth; before the first shot, p1 breaks.
-    const snap = (await this.state.storage.get('snap')) as { turn?: string } | undefined;
-    const turn = snap?.turn ?? 'p1';
+    const stored = (await this.state.storage.get('snap')) as Snapshot | undefined;
+    const turn = stored?.turn ?? 'p1';
     if (att.seat !== turn) return;
 
-    await this.state.storage.put('snap', msg['snap']);
-    this.broadcastExcept(ws, { t: 'shot', shot: msg['shot'], snap: msg['snap'] });
+    const shot = normalizeShotIntent(msg['shot']);
+    if (!shot) return;
+
+    const prior = stored ?? openingSnapshot();
+    const serverSnap = resolveShotFromSnapshot(prior, shot, att.seat);
+    const clientSnap = msg['snap'] as Snapshot | undefined;
+    if (clientSnap && !snapshotsEqual(serverSnap, clientSnap)) {
+      console.warn('carromba shot divergence', { seat: att.seat, turn });
+    }
+
+    const authoritativeSnap = SERVER_AUTHORITY ? serverSnap : (clientSnap ?? serverSnap);
+    await this.state.storage.put('snap', authoritativeSnap);
+    this.broadcast({ t: 'shot', shot, snap: authoritativeSnap });
   }
 
   private async onSync(ws: WebSocket): Promise<void> {

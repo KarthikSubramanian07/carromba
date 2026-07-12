@@ -48,7 +48,7 @@ export interface LocalMove {
 export interface ControllerHooks {
   onHud(info: HudInfo): void;
   onGameOver(winner: Player, humanWon: boolean): void;
-  onLocalMove?(move: LocalMove, snap: Snapshot): void;
+  onLocalMove?(move: LocalMove, snap?: Snapshot): void;
 }
 
 export class GameController {
@@ -74,10 +74,12 @@ export class GameController {
   private gen = 0; // bumped on every start/destroy to cancel stale async work
 
   // Online play. `lastShot` is the local move waiting to be broadcast once it
-  // resolves; `remoteSnap` is the opponent's authoritative board to adopt after
-  // their shot finishes animating on this screen.
+  // resolves; `remoteSnap` is the server-authoritative board to adopt after a
+  // shot finishes animating on this screen.
   private lastShot: LocalMove | null = null;
   private remoteSnap: Snapshot | null = null;
+  private expectingServerSnap = false;
+  private readonly serverAuthority = true;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -140,6 +142,24 @@ export class GameController {
     this.renderer.resize();
     this.emitHud();
     this.loop(performance.now());
+  }
+
+  applyServerShot(snap: Snapshot): void {
+    if (this.state.mode !== 'online') return;
+    if (this.simElapsed > 0 || this.accumulator > 0 || this.lastShot) {
+      this.remoteSnap = snap;
+      return;
+    }
+    this.expectingServerSnap = false;
+    this.adoptSnapshot(snap);
+  }
+
+  shouldAdoptServerSnap(): boolean {
+    return (
+      this.state.mode === 'online' &&
+      this.serverAuthority &&
+      (this.expectingServerSnap || this.simElapsed > 0 || this.lastShot !== null)
+    );
   }
 
   // Play out the opponent's shot on this screen, then adopt their authoritative
@@ -247,6 +267,7 @@ export class GameController {
     if (this.state.mode === 'online' && this.remoteSnap) {
       const snap = this.remoteSnap;
       this.remoteSnap = null;
+      this.expectingServerSnap = false;
       applySnapshot(this.state, snap);
       this.resetStrokeState();
       this.emitHud();
@@ -256,6 +277,23 @@ export class GameController {
     }
 
     const strikerPocketed = this.pocketedThisStroke.some((p) => p.kind === 'striker');
+    if (this.state.mode === 'online' && this.lastShot && this.serverAuthority) {
+      this.expectingServerSnap = true;
+      this.hooks.onLocalMove?.(this.lastShot);
+      this.lastShot = null;
+      this.resetStrokeState();
+      this.emitHud();
+      if (this.remoteSnap) {
+        const snap = this.remoteSnap;
+        this.remoteSnap = null;
+        this.expectingServerSnap = false;
+        applySnapshot(this.state, snap);
+        if (this.state.winner) return this.declareWinner(this.state.winner);
+        resetStrikerForTurn(this.state);
+      }
+      return;
+    }
+
     const summary = resolveStroke(this.state, {
       pocketed: this.pocketedThisStroke,
       strikerPocketed,
