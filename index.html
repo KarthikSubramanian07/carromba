@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#2a1f16" />
 
-    <title>Carromba — Play Carrom Online Free, No Ads</title>
+    <title>Carromba - Play Carrom Online Free, No Ads</title>
     <meta
       name="description"
       content="Play carrom online, free, with no ads and no signup. A clean, physics-driven carrom board game you can play against the computer or pass-and-play on one device. Works on desktop and mobile browsers."
@@ -17,7 +17,7 @@
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="Carromba — Play Carrom Online Free, No Ads" />
+    <meta property="og:title" content="Carromba - Play Carrom Online Free, No Ads" />
     <meta property="og:description" content="A clean, physics-driven carrom board game. Vs computer or pass-and-play. Free, no ads, no signup." />
     <meta property="og:url" content="https://carromba.pages.dev/" />
     <meta property="og:image" content="https://carromba.pages.dev/og-image.png" />
@@ -27,7 +27,7 @@
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Carromba — Play Carrom Online Free, No Ads" />
+    <meta name="twitter:title" content="Carromba - Play Carrom Online Free, No Ads" />
     <meta name="twitter:description" content="A clean, physics-driven carrom board game. Vs computer or pass-and-play. Free, no ads, no signup." />
     <meta name="twitter:image" content="https://carromba.pages.dev/og-image.png" />
 
@@ -55,19 +55,26 @@
     </script>
   </head>
   <body>
-    <!-- A little real text for search engines and for anyone with JS off. The app
-         replaces this the moment it boots. -->
+    <!-- Static first paint: real content for crawlers and instant load; the app
+         replaces it on boot. -->
     <div id="app">
-      <noscript>
+      <main>
         <h1>Carromba</h1>
         <p>
-          Carromba is a free carrom board game you play in your browser. Flick the striker,
-          pocket your pieces, cover the Queen, and clear the board before your opponent. Play
+          Play carrom online free. A clean, physics-driven carrom board game for your browser.
+          Flick the striker, pocket your pieces, cover the Queen, and clear the board. Play
           against the computer or pass-and-play with a friend on one device. No app, no ads, no
-          signup. Please enable JavaScript to play.
+          signup.
         </p>
-      </noscript>
+      </main>
     </div>
+    <noscript>
+      <p style="text-align: center; padding: 2rem">
+        Carromba is a browser game and needs JavaScript enabled to play. It runs entirely on your
+        device: no data is ever sent anywhere.
+      </p>
+    </noscript>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
+
