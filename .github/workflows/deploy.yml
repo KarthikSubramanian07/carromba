@@ -1,9 +1,10 @@
 name: Deploy
 
-# On every push to main, build and ship to Cloudflare Pages. The deploy step only
-# runs if a CLOUDFLARE_API_TOKEN secret is present, so the workflow stays green
-# even before that one-time setup (see README). Locally you can always run
-# `npm run deploy`, which uses your own wrangler login.
+# On every push to main, build and ship to Cloudflare Pages and the rooms Worker.
+# The deploy steps are best-effort: they only run when a CLOUDFLARE_API_TOKEN
+# secret is set, and a missing or invalid token never fails the run, so the repo
+# stays green whether or not push-to-deploy is wired up. Locally you can always
+# run `npm run deploy`, which uses your own wrangler login.
 on:
   push:
     branches: [main]
@@ -32,6 +33,7 @@ jobs:
 
       - name: Deploy to Cloudflare Pages
         if: ${{ env.CF_TOKEN != '' }}
+        continue-on-error: true
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -40,6 +42,7 @@ jobs:
 
       - name: Deploy the online rooms Worker
         if: ${{ env.CF_TOKEN != '' }}
+        continue-on-error: true
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
