@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Keep npm dependencies patched. Everything here is dev-only (the shipped site
+  # has no runtime dependencies), but staying current keeps the security tab green.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        patterns:
+          - "*"
+
+  # Keep the pinned GitHub Actions SHAs fresh.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
