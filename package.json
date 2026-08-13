@@ -17,13 +17,13 @@
     "deploy": "npm run build && wrangler pages deploy dist --project-name carromba"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260710.1",
-    "oxlint": "^1.73.0",
+    "@cloudflare/workers-types": "^5.20260810.1",
+    "oxlint": "^1.78.0",
     "sharp": "^0.35.3",
     "typescript": "^7.0.2",
-    "vite": "^8.1.4",
+    "vite": "^8.2.1",
     "vitest": "^4.1.10",
-    "wrangler": "^4.110.0"
+    "wrangler": "^4.120.1"
   },
   "overrides": {
     "undici": ">=7.29.0",
