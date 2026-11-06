@@ -108,6 +108,9 @@ body {
   text-decoration: none;
   border-bottom: 1px dashed transparent;
   padding: 0.2rem 0;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1.4;
 }
 .link:hover {
   color: var(--ink);
@@ -205,14 +208,17 @@ body {
   gap: 0.4rem;
 }
 .seg-btn {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
   appearance: none;
   border: 1px solid var(--panel-border);
   background: transparent;
   color: var(--ink-dim);
   font: inherit;
+  font-size: 0.875rem;
   font-weight: 600;
-  padding: 0.55rem 0;
+  padding: 0.55rem 0.5rem;
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
@@ -223,6 +229,7 @@ body {
 }
 .home-links {
   display: flex;
+  align-items: center;
   gap: 1.25rem;
   justify-content: center;
   flex-wrap: wrap;
