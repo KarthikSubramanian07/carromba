@@ -33,10 +33,17 @@ export class App {
     p2Name: HTMLElement;
     queen: HTMLElement;
     message: HTMLElement;
+    pauseBtn: HTMLButtonElement;
+    pauseBanner: HTMLElement;
+    hint: HTMLElement;
   } | null = null;
 
   private modalRoot!: HTMLElement;
+  private liveRegion!: HTMLElement;
   private screens = new Map<string, HTMLElement>();
+  private lastAnnounced = '';
+  private lastFocusBeforeModal: HTMLElement | null = null;
+  private modalKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 
   // Online play.
   private room: Room | null = null;
@@ -73,9 +80,21 @@ export class App {
   // ---- Layout ----
   private build(): void {
     clear(this.root);
-    this.root.append(this.buildHome(), this.buildGame());
+    const skip = el(
+      'a',
+      { class: 'skip-link', href: '#main' },
+      'Skip to main content',
+    );
+    this.liveRegion = el('div', {
+      class: 'sr-only',
+      role: 'status',
+      'aria-live': 'polite',
+      'aria-atomic': 'true',
+    });
+    const main = el('main', { id: 'main', tabindex: -1 });
+    main.append(this.buildHome(), this.buildGame());
     this.modalRoot = el('div', { class: 'modal-root', hidden: true });
-    this.root.append(this.modalRoot);
+    this.root.append(skip, this.liveRegion, main, this.modalRoot);
   }
 
   private buildHome(): HTMLElement {
@@ -87,11 +106,16 @@ export class App {
         {
           class: 'seg-btn' + (d === this.difficulty ? ' on' : ''),
           type: 'button',
+          'aria-pressed': String(d === this.difficulty),
           onclick: () => {
             this.difficulty = d;
             setPref('lastDifficulty', d);
-            Object.values(diffButtons).forEach((x) => x.classList.remove('on'));
+            Object.values(diffButtons).forEach((x) => {
+              x.classList.remove('on');
+              x.setAttribute('aria-pressed', 'false');
+            });
             b.classList.add('on');
+            b.setAttribute('aria-pressed', 'true');
           },
         },
         d[0]!.toUpperCase() + d.slice(1),
@@ -102,7 +126,7 @@ export class App {
 
     const home = el(
       'section',
-      { class: 'screen home', 'data-screen': 'home' },
+      { class: 'screen home', 'data-screen': 'home', 'aria-label': 'Home' },
       el(
         'div',
         { class: 'home-inner' },
@@ -171,45 +195,133 @@ export class App {
   }
 
   private buildGame(): HTMLElement {
-    this.canvas = el('canvas', { id: 'board', 'aria-label': 'Carrom board' });
+    this.canvas = el('canvas', {
+      id: 'board',
+      role: 'application',
+      tabindex: 0,
+      'aria-label': 'Carrom board',
+      'aria-keyshortcuts': 'ArrowLeft ArrowRight ArrowUp ArrowDown Space Enter Escape P',
+    });
 
-    const turnPill = el('div', { class: 'turn-pill' }, 'Your turn');
-    const p1Chip = el('span', { class: 'chip' });
-    const p2Chip = el('span', { class: 'chip' });
+    const turnPill = el('div', { class: 'turn-pill', 'aria-live': 'polite' }, 'Your turn');
+    const p1Chip = el('span', { class: 'chip open', 'aria-hidden': 'true' }, '?');
+    const p2Chip = el('span', { class: 'chip open', 'aria-hidden': 'true' }, '?');
     const p1Count = el('span', { class: 'count' }, '9');
     const p2Count = el('span', { class: 'count' }, '9');
     const p1Name = el('span', { class: 'side-name' }, 'You');
     const p2Name = el('span', { class: 'side-name' }, 'Bot');
     const queen = el('div', { class: 'queen-badge' }, 'Queen on board');
     const message = el('p', { class: 'message', role: 'status', 'aria-live': 'polite' }, '');
+    const pauseBtn = el(
+      'button',
+      {
+        class: 'icon-btn',
+        type: 'button',
+        title: 'Pause game',
+        'aria-label': 'Pause game',
+        'aria-pressed': 'false',
+        onclick: () => this.controller?.togglePause(),
+      },
+      'Pause',
+    );
+    const pauseBanner = el(
+      'div',
+      { class: 'pause-banner', hidden: true, role: 'status' },
+      el('p', {}, 'Game paused'),
+      el(
+        'button',
+        { class: 'btn primary', type: 'button', onclick: () => this.controller?.setPaused(false) },
+        'Resume',
+      ),
+    );
+    const hint = el(
+      'p',
+      { class: 'hint', id: 'board-help' },
+      'Keyboard: Left/Right or A/D place the striker. Q/E or [/] aim, Up/Down set power, Space or Enter fires. P pauses. Pointer: grab the striker, pull back, let go.',
+    );
+    this.canvas.setAttribute('aria-describedby', 'board-help');
 
-    this.hud = { turnPill, p1Chip, p2Chip, p1Count, p2Count, p1Name, p2Name, queen, message };
+    this.hud = {
+      turnPill,
+      p1Chip,
+      p2Chip,
+      p1Count,
+      p2Count,
+      p1Name,
+      p2Name,
+      queen,
+      message,
+      pauseBtn,
+      pauseBanner,
+      hint,
+    };
 
     const game = el(
       'section',
-      { class: 'screen game', 'data-screen': 'game', hidden: true },
+      { class: 'screen game', 'data-screen': 'game', hidden: true, 'aria-label': 'Game board' },
       el(
         'header',
         { class: 'topbar' },
-        el('button', { class: 'icon-btn', type: 'button', title: 'Back to menu', onclick: () => this.goHome() }, '← Menu'),
+        el(
+          'button',
+          {
+            class: 'icon-btn',
+            type: 'button',
+            title: 'Back to menu',
+            'aria-label': 'Back to menu',
+            onclick: () => this.goHome(),
+          },
+          '← Menu',
+        ),
         turnPill,
         el(
           'div',
           { class: 'topbar-actions' },
-          el('button', { class: 'icon-btn', type: 'button', title: 'Restart board', onclick: () => this.restart() }, '↻'),
-          el('button', { class: 'icon-btn', type: 'button', title: 'Settings', onclick: () => this.openSettings() }, '⚙'),
+          pauseBtn,
+          el(
+            'button',
+            {
+              class: 'icon-btn',
+              type: 'button',
+              title: 'Restart board',
+              'aria-label': 'Restart board',
+              onclick: () => this.restart(),
+            },
+            '↻',
+          ),
+          el(
+            'button',
+            {
+              class: 'icon-btn',
+              type: 'button',
+              title: 'Settings',
+              'aria-label': 'Settings',
+              onclick: () => this.openSettings(),
+            },
+            '⚙',
+          ),
         ),
       ),
       el(
         'div',
-        { class: 'scoreboard' },
-        el('div', { class: 'side' }, p1Chip, el('div', { class: 'side-text' }, p1Name, p1Count)),
+        { class: 'scoreboard', role: 'group', 'aria-label': 'Scoreboard' },
+        el(
+          'div',
+          { class: 'side', 'data-side': 'p1' },
+          p1Chip,
+          el('div', { class: 'side-text' }, p1Name, p1Count),
+        ),
         queen,
-        el('div', { class: 'side right' }, el('div', { class: 'side-text' }, p2Name, p2Count), p2Chip),
+        el(
+          'div',
+          { class: 'side right', 'data-side': 'p2' },
+          el('div', { class: 'side-text' }, p2Name, p2Count),
+          p2Chip,
+        ),
       ),
-      el('div', { class: 'board-wrap' }, this.canvas),
+      el('div', { class: 'board-wrap' }, this.canvas, pauseBanner),
       message,
-      el('p', { class: 'hint' }, 'Grab the striker to aim. Pull back, let go. Drag along the baseline to reposition.'),
+      hint,
     );
     this.screens.set('game', game);
     return game;
@@ -225,6 +337,7 @@ export class App {
     this.controller = new GameController(this.canvas, this.theme.id, {
       onHud: (info) => this.renderHud(info),
       onGameOver: (winner, humanWon) => this.showWin(winner, humanWon),
+      onPauseChange: (paused) => this.renderPause(paused),
       onLocalMove: (move, snap) => {
         if (snap) this.room?.sendShot(move, snap);
         else this.room?.sendShot({ v: 1, ...move });
@@ -243,6 +356,8 @@ export class App {
     this.clearHash();
     this.controller?.destroy();
     this.controller = null;
+    this.lastAnnounced = '';
+    this.closeModal();
     this.showScreen('home');
     // Refresh the record line, which may have changed.
     const line = this.screens.get('home')?.querySelector('.stat-line');
@@ -256,6 +371,7 @@ export class App {
     this.ensureController();
     this.controller!.start(mode, this.difficulty, 'p1');
     this.closeModal();
+    this.canvas.focus({ preventScroll: true });
   }
 
   private restart(): void {
@@ -348,39 +464,107 @@ export class App {
     }
     h.p1Count.textContent = countText(info.leftP1);
     h.p2Count.textContent = countText(info.leftP2);
+    h.p1Count.setAttribute(
+      'aria-label',
+      info.leftP1 < 0 ? 'Men left undecided' : `${info.leftP1} men left`,
+    );
+    h.p2Count.setAttribute(
+      'aria-label',
+      info.leftP2 < 0 ? 'Men left undecided' : `${info.leftP2} men left`,
+    );
     setChip(h.p1Chip, info.colors.p1);
     setChip(h.p2Chip, info.colors.p2);
 
     const active = info.turn;
-    this.screens.get('game')?.querySelector('.side')?.classList.toggle('active', active === 'p1');
-    this.screens.get('game')?.querySelector('.side.right')?.classList.toggle('active', active === 'p2');
-
-    if (info.thinking) {
-      h.turnPill.textContent = 'Bot is lining it up...';
-    } else if (local) {
-      h.turnPill.textContent = active === 'p1' ? 'Player 1 to shoot' : 'Player 2 to shoot';
-    } else if (active === info.humanSide) {
-      h.turnPill.textContent = 'Your turn';
+    const game = this.screens.get('game');
+    const side1 = game?.querySelector('.side[data-side="p1"]');
+    const side2 = game?.querySelector('.side[data-side="p2"]');
+    side1?.classList.toggle('active', active === 'p1');
+    side2?.classList.toggle('active', active === 'p2');
+    if (active === 'p1') {
+      side1?.setAttribute('aria-current', 'true');
+      side2?.removeAttribute('aria-current');
     } else {
-      h.turnPill.textContent = online ? "Opponent's turn" : "Bot's turn";
+      side2?.setAttribute('aria-current', 'true');
+      side1?.removeAttribute('aria-current');
     }
 
+    let turnText: string;
+    if (info.paused) turnText = 'Paused';
+    else if (info.thinking) turnText = 'Bot is lining it up...';
+    else if (local) turnText = active === 'p1' ? 'Player 1 to shoot' : 'Player 2 to shoot';
+    else if (active === info.humanSide) turnText = 'Your turn';
+    else turnText = online ? "Opponent's turn" : "Bot's turn";
+    h.turnPill.textContent = turnText;
+
     h.queen.textContent = queenText(info);
-    h.queen.className = 'queen-badge' + (info.queen.covered ? ' done' : info.queen.pending ? ' pending' : '');
+    h.queen.className =
+      'queen-badge' + (info.queen.covered ? ' done' : info.queen.pending ? ' pending' : '');
+    if (info.queen.pending) h.queen.setAttribute('data-state', 'pending');
+    else if (info.queen.covered) h.queen.setAttribute('data-state', 'covered');
+    else h.queen.setAttribute('data-state', 'on-board');
+
     if (info.message) h.message.textContent = info.message;
+    this.renderPause(info.paused);
+    this.announcePlay(info, turnText);
+    if (this.controller) this.canvas.setAttribute('aria-label', this.controller.describeBoard());
+  }
+
+  private renderPause(paused: boolean): void {
+    if (!this.hud) return;
+    this.hud.pauseBanner.hidden = !paused;
+    this.hud.pauseBtn.setAttribute('aria-pressed', String(paused));
+    this.hud.pauseBtn.setAttribute('aria-label', paused ? 'Resume game' : 'Pause game');
+    this.hud.pauseBtn.title = paused ? 'Resume game' : 'Pause game';
+    this.hud.pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+    this.screens.get('game')?.classList.toggle('is-paused', paused);
+  }
+
+  private announcePlay(info: HudInfo, turnText: string): void {
+    const score =
+      info.leftP1 < 0 || info.leftP2 < 0
+        ? 'Colors not decided yet'
+        : `Score: Player 1 ${info.leftP1} men left, Player 2 ${info.leftP2} men left`;
+    const parts = [turnText];
+    if (info.message) parts.push(info.message);
+    parts.push(score, queenText(info));
+    if (info.paused) parts.unshift('Game paused');
+    const next = parts.join('. ');
+    if (next === this.lastAnnounced) return;
+    this.lastAnnounced = next;
+    this.liveRegion.textContent = next;
   }
 
   // ---- Modals ----
   private openModal(title: string, body: HTMLElement, footer?: HTMLElement, dismissable = true): void {
+    this.lastFocusBeforeModal =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const titleId = 'modal-title';
     const card = el(
       'div',
-      { class: 'modal-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+      {
+        class: 'modal-card',
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-labelledby': titleId,
+        tabindex: -1,
+      },
       el(
         'div',
         { class: 'modal-head' },
-        el('h2', {}, title),
+        el('h2', { id: titleId }, title),
         dismissable
-          ? el('button', { class: 'icon-btn', type: 'button', title: 'Close', onclick: () => this.closeModal() }, '×')
+          ? el(
+              'button',
+              {
+                class: 'icon-btn',
+                type: 'button',
+                title: 'Close',
+                'aria-label': 'Close',
+                onclick: () => this.closeModal(),
+              },
+              '×',
+            )
           : '',
       ),
       body,
@@ -392,11 +576,63 @@ export class App {
       card,
     );
     this.modalRoot.hidden = false;
+    this.screens.forEach((node) => node.setAttribute('inert', ''));
+    this.bindModalFocus(card, dismissable);
+    const focusable = this.modalFocusables(card);
+    (focusable[0] ?? card).focus();
   }
 
   private closeModal(): void {
+    this.unbindModalFocus();
     this.modalRoot.hidden = true;
     clear(this.modalRoot);
+    this.screens.forEach((node) => node.removeAttribute('inert'));
+    const restore = this.lastFocusBeforeModal;
+    this.lastFocusBeforeModal = null;
+    if (restore && document.contains(restore)) restore.focus({ preventScroll: true });
+  }
+
+  private modalFocusables(root: HTMLElement): HTMLElement[] {
+    return [
+      ...root.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    ].filter((n) => !n.hasAttribute('disabled') && n.getAttribute('aria-hidden') !== 'true');
+  }
+
+  private bindModalFocus(card: HTMLElement, dismissable: boolean): void {
+    this.unbindModalFocus();
+    this.modalKeyHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && dismissable) {
+        e.preventDefault();
+        this.closeModal();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const nodes = this.modalFocusables(card);
+      if (nodes.length === 0) {
+        e.preventDefault();
+        card.focus();
+        return;
+      }
+      const first = nodes[0]!;
+      const last = nodes[nodes.length - 1]!;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener('keydown', this.modalKeyHandler, true);
+  }
+
+  private unbindModalFocus(): void {
+    if (this.modalKeyHandler) {
+      window.removeEventListener('keydown', this.modalKeyHandler, true);
+      this.modalKeyHandler = null;
+    }
   }
 
   private showWin(winner: Player, humanWon: boolean): void {
@@ -504,10 +740,15 @@ export class App {
         {
           class: 'theme-btn' + (t.id === this.theme.id ? ' on' : ''),
           type: 'button',
+          'aria-pressed': String(t.id === this.theme.id),
           onclick: () => {
             this.setTheme(t.id);
-            themeGrid.querySelectorAll('.theme-btn').forEach((x) => x.classList.remove('on'));
+            themeGrid.querySelectorAll('.theme-btn').forEach((x) => {
+              x.classList.remove('on');
+              x.setAttribute('aria-pressed', 'false');
+            });
             btn.classList.add('on');
+            btn.setAttribute('aria-pressed', 'true');
           },
         },
         swatch,
@@ -547,6 +788,9 @@ export class App {
       'div',
       { class: 'modal-body howto' },
       p('Set the striker anywhere on your baseline, pull back like a slingshot, and let go.'),
+      p(
+        'Keyboard play: focus the board, then Left/Right or A/D to place, Q/E or [/] to aim, Up/Down for power, Space or Enter to fire. P pauses; Escape cancels aim or resumes.',
+      ),
       p('Pocket one of your men and you shoot again. Miss, and it is the other side’s turn.'),
       p('Your color is decided the moment you sink your first man. From then on the whites are one player’s, the blacks the other’s.'),
       p('The red Queen is worth chasing, but you have to cover her: sink one of your own men on the same shot or the next one, or she goes back to the middle.'),
@@ -557,15 +801,27 @@ export class App {
   }
 
   private toggleRow(label: string, on: boolean, onChange: (on: boolean) => void): HTMLElement {
-    const knob = el('span', { class: 'knob' });
-    const sw = el('button', { class: 'switch' + (on ? ' on' : ''), type: 'button', role: 'switch', 'aria-checked': String(on) }, knob);
+    const labelId = `switch-label-${label.toLowerCase().replace(/\s+/g, '-')}`;
+    const knob = el('span', { class: 'knob', 'aria-hidden': 'true' });
+    const sw = el(
+      'button',
+      {
+        class: 'switch' + (on ? ' on' : ''),
+        type: 'button',
+        role: 'switch',
+        'aria-checked': String(on),
+        'aria-labelledby': labelId,
+        'aria-label': label,
+      },
+      knob,
+    );
     sw.addEventListener('click', () => {
       const next = !sw.classList.contains('on');
       sw.classList.toggle('on', next);
       sw.setAttribute('aria-checked', String(next));
       onChange(next);
     });
-    return el('div', { class: 'row' }, el('span', {}, label), sw);
+    return el('div', { class: 'row' }, el('span', { id: labelId }, label), sw);
   }
 
   private statsBlock(): HTMLElement {
@@ -627,7 +883,11 @@ function countText(left: number): string {
 }
 function setChip(node: HTMLElement, color: 'white' | 'black' | null): void {
   node.className = 'chip' + (color ? ' ' + color : ' open');
+  // Letter marks keep side colours readable without relying on hue alone.
+  node.textContent = color === 'white' ? 'W' : color === 'black' ? 'B' : '?';
   node.title = color ? `${color} pieces` : 'color not decided yet';
+  node.setAttribute('aria-label', color ? `${color} pieces` : 'color not decided yet');
+  node.removeAttribute('aria-hidden');
 }
 function queenText(info: HudInfo): string {
   if (info.queen.covered) {

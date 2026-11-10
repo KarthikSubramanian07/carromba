@@ -40,6 +40,7 @@ export interface HudInfo {
   queen: GameState['queen'];
   message: string;
   thinking: boolean;
+  paused: boolean;
 }
 
 // A move the local player just resolved, plus the resulting board, for the app to
@@ -704,6 +705,7 @@ export class GameController {
       queen: this.state.queen,
       message: this.state.lastEvent,
       thinking: this.thinking,
+      paused: this.paused,
     });
   }
 
