@@ -24,6 +24,11 @@ const FIXED_DT = 1 / 120;
 // wide the baseline strip is for repositioning.
 const GRAB_RADIUS = STRIKER_RADIUS * 2.6;
 const PLACE_BAND = 80;
+// Keyboard placement and aim steps. Coarse enough to reach a pocket quickly,
+// fine enough to line up a thin cut without needing a mouse.
+const PLACE_STEP = 18;
+const ANGLE_STEP = (6 * Math.PI) / 180;
+const POWER_STEP = 0.05;
 
 export interface HudInfo {
   turn: Player;
@@ -49,6 +54,7 @@ export interface ControllerHooks {
   onHud(info: HudInfo): void;
   onGameOver(winner: Player, humanWon: boolean): void;
   onLocalMove?(move: LocalMove, snap?: Snapshot): void;
+  onPauseChange?(paused: boolean): void;
 }
 
 export class GameController {
@@ -62,6 +68,10 @@ export class GameController {
   private inputMode: 'place' | 'aim' | null = null;
   private pointer: Vec | null = null;
   private activePointerId: number | null = null;
+  // Keyboard aim: angle in radians (0 = right, increases clockwise to match the
+  // board's y-down space) and power 0..1. Null means the player is still placing.
+  private kbAim: { angle: number; power: number } | null = null;
+  private paused = false;
 
   // Accumulated across the current stroke's simulation.
   private accumulator = 0;
@@ -103,8 +113,66 @@ export class GameController {
   }
   private reduceMotion = false;
 
+  private motionBlocked(): boolean {
+    return (
+      this.reduceMotion ||
+      (typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches)
+    );
+  }
+
   setMuted(muted: boolean): void {
     audio.setMuted(muted);
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  setPaused(paused: boolean): void {
+    if (this.paused === paused) return;
+    this.paused = paused;
+    if (paused) {
+      this.cancelPointerAim();
+      this.kbAim = null;
+      this.state.phase = this.state.phase === 'aiming' ? 'placing' : this.state.phase;
+    }
+    this.lastTime = performance.now();
+    this.hooks.onPauseChange?.(paused);
+    this.emitHud();
+  }
+
+  togglePause(): void {
+    if (this.state.phase === 'gameover') return;
+    this.setPaused(!this.paused);
+  }
+
+  /** Short plain-language board summary for the canvas accessible name. */
+  describeBoard(): string {
+    const s = this.state;
+    const turn =
+      s.mode === 'local'
+        ? s.turn === 'p1'
+          ? 'Player 1 to shoot'
+          : 'Player 2 to shoot'
+        : s.turn === s.humanSide
+          ? 'Your turn'
+          : s.mode === 'online'
+            ? "Opponent's turn"
+            : "Bot's turn";
+    const colorOf = (p: Player) => s.colors[p] ?? 'undecided';
+    const p1Left = menLeftFor(s, 'p1');
+    const p2Left = menLeftFor(s, 'p2');
+    const scores =
+      p1Left < 0 || p2Left < 0
+        ? 'Colors not decided yet'
+        : `Player 1 has ${p1Left} men left, Player 2 has ${p2Left}`;
+    const queen = s.queen.covered
+      ? 'Queen covered'
+      : s.queen.pending
+        ? 'Queen needs covering'
+        : 'Queen on board';
+    const pause = this.paused ? ' Game paused.' : '';
+    return `Carrom board. ${turn}. Colors: p1 ${colorOf('p1')}, p2 ${colorOf('p2')}. ${scores}. ${queen}.${pause}`;
   }
 
   start(mode: Mode, difficulty: Difficulty, humanSide: Player = 'p1'): void {
@@ -116,10 +184,13 @@ export class GameController {
     this.fx.clear();
     this.inputMode = null;
     this.pointer = null;
+    this.kbAim = null;
+    this.paused = false;
     this.thinking = false;
     this.aiPreview = null;
     this.lastTime = performance.now();
     this.renderer.resize();
+    this.hooks.onPauseChange?.(false);
     this.emitHud();
     this.loop(performance.now());
     this.maybeRunAI();
@@ -136,10 +207,13 @@ export class GameController {
     this.fx.clear();
     this.inputMode = null;
     this.pointer = null;
+    this.kbAim = null;
+    this.paused = false;
     this.thinking = false;
     this.aiPreview = null;
     this.lastTime = performance.now();
     this.renderer.resize();
+    this.hooks.onPauseChange?.(false);
     this.emitHud();
     this.loop(performance.now());
   }
@@ -208,10 +282,11 @@ export class GameController {
   private loop = (now: number): void => {
     const dt = Math.min(0.05, (now - this.lastTime) / 1000 || 0);
     this.lastTime = now;
-    this.time += dt;
-
-    if (this.state.phase === 'simulating') this.stepSimulation(dt);
-    if (!this.reduceMotion) this.fx.update(dt);
+    if (!this.paused) {
+      this.time += dt;
+      if (this.state.phase === 'simulating') this.stepSimulation(dt);
+      if (!this.motionBlocked()) this.fx.update(dt);
+    }
 
     this.renderer.render(this.state, this.buildOverlay(), this.fx);
     this.raf = requestAnimationFrame(this.loop);
@@ -237,7 +312,7 @@ export class GameController {
     for (const p of events.pocketed) {
       this.pocketedThisStroke.push({ id: p.id, kind: p.kind });
       audio.playPocket();
-      if (!this.reduceMotion) this.fx.pocket(p.x, p.y, this.pocketColor(p.kind), this.renderer.activeTheme.glow);
+      if (!this.motionBlocked()) this.fx.pocket(p.x, p.y, this.pocketColor(p.kind), this.renderer.activeTheme.glow);
     }
 
     // Did the striker touch a man this frame? The engine reports this for even
@@ -250,7 +325,7 @@ export class GameController {
     const loudest = [...events.impacts].sort((a, b) => b.strength - a.strength).slice(0, 2);
     for (const c of loudest) {
       audio.playClack(c.strength);
-      if (!this.reduceMotion) this.fx.hit(c.x, c.y, c.strength, this.renderer.activeTheme.aim);
+      if (!this.motionBlocked()) this.fx.hit(c.x, c.y, c.strength, this.renderer.activeTheme.aim);
     }
   }
 
@@ -373,9 +448,17 @@ export class GameController {
     return true;
   }
 
+  private cancelPointerAim(): void {
+    this.inputMode = null;
+    this.pointer = null;
+    this.activePointerId = null;
+  }
+
   private onPointerDown = (e: PointerEvent): void => {
-    if (!this.isHumanTurn()) return;
+    if (this.paused || !this.isHumanTurn()) return;
     audio.unlockAudio();
+    // Pointer aiming replaces any in-progress keyboard aim.
+    this.kbAim = null;
     const p = this.renderer.screenToBoard(e.clientX, e.clientY);
     this.activePointerId = e.pointerId;
     this.canvas.setPointerCapture(e.pointerId);
@@ -439,11 +522,120 @@ export class GameController {
     this.state.striker.pos.y = pos.y;
   }
 
+  private defaultAimAngle(): number {
+    // y grows down, so p1 (bottom baseline) aims "up" at -π/2 and p2 aims down.
+    return this.state.turn === 'p1' ? -Math.PI / 2 : Math.PI / 2;
+  }
+
+  private ensureKbAim(): { angle: number; power: number } {
+    if (!this.kbAim) {
+      this.kbAim = { angle: this.defaultAimAngle(), power: 0.45 };
+      this.state.phase = 'aiming';
+    }
+    return this.kbAim;
+  }
+
+  private fireKeyboardShot(): void {
+    const aim = this.kbAim;
+    if (!aim || aim.power < 0.08) return;
+    const dir = { x: Math.cos(aim.angle), y: Math.sin(aim.angle) };
+    const speed = MIN_STRIKER_SPEED + aim.power * (MAX_STRIKER_SPEED - MIN_STRIKER_SPEED);
+    this.lastShot = { strikerX: this.state.striker.pos.x, dir, speed };
+    this.state.striker.vel.x = dir.x * speed;
+    this.state.striker.vel.y = dir.y * speed;
+    this.kbAim = null;
+    this.cancelPointerAim();
+    this.beginSimulation();
+  }
+
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    // Keep shortcuts on the board so they don't steal keys from dialogs,
+    // the share field, or assistive-tech navigation elsewhere on the page.
+    if (document.activeElement !== this.canvas) return;
+    const key = e.key;
+
+    if (key === 'p' || key === 'P') {
+      if (this.state.phase === 'gameover') return;
+      e.preventDefault();
+      this.togglePause();
+      return;
+    }
+
+    if (this.paused) {
+      if (key === 'Escape') {
+        e.preventDefault();
+        this.setPaused(false);
+      }
+      return;
+    }
+
+    if (!this.isHumanTurn()) return;
+
+    if (key === 'Escape') {
+      if (this.kbAim || this.inputMode === 'aim') {
+        e.preventDefault();
+        this.kbAim = null;
+        this.cancelPointerAim();
+        this.state.phase = 'placing';
+      }
+      return;
+    }
+
+    const moveLeft = key === 'ArrowLeft' || key === 'a' || key === 'A';
+    const moveRight = key === 'ArrowRight' || key === 'd' || key === 'D';
+    if ((moveLeft || moveRight) && !e.shiftKey) {
+      // While aiming with the keyboard, left/right rotate; bare arrows place.
+      if (this.kbAim) {
+        e.preventDefault();
+        this.kbAim.angle += moveLeft ? -ANGLE_STEP : ANGLE_STEP;
+        return;
+      }
+      e.preventDefault();
+      audio.unlockAudio();
+      const delta = moveLeft ? -PLACE_STEP : PLACE_STEP;
+      this.placeAt(this.state.striker.pos.x + delta);
+      return;
+    }
+
+    if (key === 'q' || key === 'Q' || key === '[') {
+      e.preventDefault();
+      audio.unlockAudio();
+      this.ensureKbAim().angle -= ANGLE_STEP;
+      return;
+    }
+    if (key === 'e' || key === 'E' || key === ']') {
+      e.preventDefault();
+      audio.unlockAudio();
+      this.ensureKbAim().angle += ANGLE_STEP;
+      return;
+    }
+
+    const powerUp = key === 'ArrowUp' || key === 'w' || key === 'W' || key === '+' || key === '=';
+    const powerDown = key === 'ArrowDown' || key === 's' || key === 'S' || key === '-' || key === '_';
+    if (powerUp || powerDown) {
+      e.preventDefault();
+      audio.unlockAudio();
+      const aim = this.ensureKbAim();
+      aim.power = Math.max(0.08, Math.min(1, aim.power + (powerUp ? POWER_STEP : -POWER_STEP)));
+      return;
+    }
+
+    if (key === ' ' || key === 'Enter') {
+      e.preventDefault();
+      audio.unlockAudio();
+      if (!this.kbAim) this.ensureKbAim();
+      else this.fireKeyboardShot();
+      return;
+    }
+  };
+
   private bindInput(): void {
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
     this.canvas.addEventListener('pointercancel', this.onPointerUp);
+    window.addEventListener('keydown', this.onKeyDown);
     this.canvas.style.touchAction = 'none';
   }
   private unbindInput(): void {
@@ -451,6 +643,7 @@ export class GameController {
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('pointercancel', this.onPointerUp);
+    window.removeEventListener('keydown', this.onKeyDown);
   }
 
   // ---- Overlay + HUD ----
@@ -464,6 +657,17 @@ export class GameController {
       showAim = true;
       aimDir = this.aiPreview.dir;
       aimPower = this.aiPreview.power;
+    } else if (this.kbAim) {
+      showAim = true;
+      aimDir = { x: Math.cos(this.kbAim.angle), y: Math.sin(this.kbAim.angle) };
+      aimPower = this.kbAim.power;
+      // Ghost the pull handle opposite the aim so the power bar matches the
+      // slingshot overlay used for pointer aiming.
+      const pull = 40 + this.kbAim.power * 300;
+      pullTo = {
+        x: this.state.striker.pos.x - aimDir.x * pull,
+        y: this.state.striker.pos.y - aimDir.y * pull,
+      };
     } else if (this.inputMode === 'aim' && this.pointer) {
       const flick = computeFlick(this.state.striker.pos, this.pointer);
       if (flick) {
@@ -474,10 +678,13 @@ export class GameController {
       }
     }
 
-    const highlightBaseline = this.isHumanTurn() && this.state.phase === 'placing' ? this.state.turn : null;
+    const highlightBaseline =
+      !this.paused && this.isHumanTurn() && this.state.phase === 'placing' && !this.kbAim
+        ? this.state.turn
+        : null;
 
     return {
-      showAim,
+      showAim: showAim && !this.paused,
       aimDir,
       aimPower,
       pullTo,

@@ -64,7 +64,9 @@ const warmHeritage: Theme = {
   pageBg2: '#3a2b1e',
   ink: '#f3e7d2',
   inkDim: '#b8a488',
-  accent: '#c8622f',
+  // #cd6a34 keeps the warm copper look while clearing 4.5:1 on the panel for
+  // accent-coloured body text (coffee link, pending badges).
+  accent: '#cd6a34',
   accentInk: '#1c130b',
   panel: '#241a12',
   panelBorder: '#4a3623',
